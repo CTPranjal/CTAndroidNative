@@ -15,6 +15,7 @@ import com.adjust.sdk.LogLevel;
 public class GlobalApplication extends Application {
     @Override
     public void onCreate() {
+        ActivityLifecycleCallback.register(this);
         super.onCreate();
 
         String appToken = "lysplpl4f75s";
