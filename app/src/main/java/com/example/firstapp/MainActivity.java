@@ -1,9 +1,20 @@
 package com.example.firstapp;
 
+import static android.Manifest.permission.ACCESS_BACKGROUND_LOCATION;
+import static android.Manifest.permission.ACCESS_FINE_LOCATION;
+import static com.clevertap.android.geofence.CTGeofenceSettings.ACCURACY_HIGH;
+import static com.clevertap.android.geofence.CTGeofenceSettings.FETCH_LAST_LOCATION_PERIODIC;
+
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+
 import android.annotation.SuppressLint;
 import android.app.NotificationManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -14,6 +25,10 @@ import android.widget.Button;
 import com.adjust.sdk.Adjust;
 import com.adjust.sdk.AdjustConfig;
 import com.adjust.sdk.AdjustEvent;
+import com.clevertap.android.geofence.CTGeofenceAPI;
+import com.clevertap.android.geofence.CTGeofenceSettings;
+import com.clevertap.android.geofence.Logger;
+import com.clevertap.android.geofence.interfaces.CTGeofenceEventsListener;
 import com.clevertap.android.sdk.CleverTapAPI;
 import java.io.InvalidClassException;
 import java.util.ArrayList;
@@ -31,9 +46,12 @@ import com.clevertap.android.sdk.displayunits.model.CleverTapDisplayUnit;
 import com.clevertap.android.sdk.interfaces.OnInitCleverTapIDListener;
 
 import android.util.Log;
+
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 
-public class MainActivity extends AppCompatActivity implements CTInboxListener, DisplayUnitListener, InAppNotificationButtonListener {
+public class MainActivity extends AppCompatActivity implements CTInboxListener, DisplayUnitListener, InAppNotificationButtonListener, LocationListener, CTGeofenceEventsListener {
     public Button btn;
     public Button btn2;
     public Button btn3;
@@ -42,12 +60,13 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
     public Button btn6;
     public Button btn7;
     public String ctid;
+    CleverTapAPI clevertapDefaultInstance;
 
 
     @SuppressLint("MissingInflatedId")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        CleverTapAPI clevertapDefaultInstance = CleverTapAPI.getDefaultInstance(getApplicationContext());
+        clevertapDefaultInstance = CleverTapAPI.getDefaultInstance(getApplicationContext());
 
         CleverTapAPI.createNotificationChannel(getApplicationContext(),"P01","First Push","This is my first push channel try",NotificationManager.IMPORTANCE_MAX,true);
         Bundle extras = null;
@@ -55,19 +74,22 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
 
         clevertapDefaultInstance.setInAppNotificationButtonListener(this);
 
+        setupCleverTapGeofence();
+
         if (clevertapDefaultInstance != null) {
             //Set the Notification Inbox Listener
             clevertapDefaultInstance.setCTNotificationInboxListener(this);
             //Initialize the inbox and wait for callbacks on overridden methods
             clevertapDefaultInstance.initializeInbox();
         }
+        Log.d("clevertap","inboxmsg"+clevertapDefaultInstance.getAllInboxMessages());
+
         clevertapDefaultInstance.getCleverTapID(new OnInitCleverTapIDListener() {
             @Override
             public void onInitCleverTapID(final String cleverTapID) {
                 // Callback on main thread
                 Adjust.addSessionPartnerParameter("clevertap_id", cleverTapID);
                 ctid = cleverTapID;
-                Log.d("Clevertap", "Biswa:" + ctid);
             }
         });
         super.onCreate(savedInstanceState);
@@ -76,9 +98,6 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
 
         CleverTapAPI.setDebugLevel(CleverTapAPI.LogLevel.VERBOSE);     //Set Log level to VERBOSE
         CleverTapAPI.getDefaultInstance(this).setDisplayUnitListener(this);
-        CleverTapAPI.getDefaultInstance(this).pushEvent("Native Display pc");
-//        clevertapDefaultInstance.pushEvent("OnePlus Event");
-        clevertapDefaultInstance.deleteInboxMessage("1683633788_1683638204");
 
         btn=findViewById(R.id.p);
         btn2=findViewById(R.id.p2);
@@ -94,25 +113,13 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
             public void onClick(View view) {
                 // each of the below mentioned fields are optional
                 HashMap<String, Object> profileUpdate = new HashMap<String, Object>();
-                profileUpdate.put("Name", "Krishna");    // String
-                profileUpdate.put("Identity", 1231221);      // String or number
-                profileUpdate.put("Email", "sssssaaaa@clevertap.com"); // Email address of the user
-                profileUpdate.put("Gender", "M");             // Can be either M or F
-                // optional fields. controls whether the user will be sent email, push etc.
-                profileUpdate.put("MSG-email", true);        // Disable email notifications
-                profileUpdate.put("MSG-push", true);          // Enable push notifications
-                profileUpdate.put("MSG-sms", true);          // Disable SMS notifications
-                profileUpdate.put("MSG-whatsapp", true);      // Enable WhatsApp notifications
-                ArrayList<String> stuff = new ArrayList<String>();
-                stuff.add("Tote Bag");
-                stuff.add("Jordans");
-                profileUpdate.put("MyStuff", stuff);                        //ArrayList of Strings
-                String[] otherStuff = {"Denims","Body Mist"};
-                profileUpdate.put("MyStuff", otherStuff);                   //String Array
+//                profileUpdate.put("Name", "Demo");    // String
+                profileUpdate.put("Phone", "+");   // Phone (with the country code, starting with +)
 
+                profileUpdate.put("Identity", "CT102");      // String or number
+                profileUpdate.put("Email", "aditya18alt@gmail.com"); // Email address of the user
                 clevertapDefaultInstance.onUserLogin(profileUpdate);
             }
-
         });
 
 
@@ -188,6 +195,7 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
         });
 
         btn4.setOnClickListener(new View.OnClickListener() {
+
             @Override
             public void onClick(View view) {
                 clevertapDefaultInstance.showAppInbox();//Opens Activity with default style configs
@@ -203,13 +211,55 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
         });
     }
 
+    @SuppressLint("LongLogTag")
+    private void setupCleverTapGeofence() {
+        CleverTapAPI clevertapDefaultInstance = CleverTapAPI.getDefaultInstance(this);
+        CTGeofenceSettings ctGeofenceSettings = new CTGeofenceSettings.Builder()
+                .enableBackgroundLocationUpdates(true)//boolean to enable background location updates
+                .setLogLevel(Logger.VERBOSE)//Log Level
+                .setLocationAccuracy(CTGeofenceSettings.ACCURACY_HIGH)//byte value for Location Accuracy
+                .setLocationFetchMode(CTGeofenceSettings.FETCH_CURRENT_LOCATION_PERIODIC)//byte value for Fetch Mode
+                .setGeofenceMonitoringCount(100)//int value for number of Geofences CleverTap can monitor
+                .setInterval(3600000)//long value for interval in milliseconds
+                .setFastestInterval(1800000)//long value for fastest interval in milliseconds
+                .setSmallestDisplacement(1000f)//float value for smallest Displacement in meters
+                .setGeofenceNotificationResponsiveness(300000)// int value for geofence notification responsiveness in milliseconds
+                .build();
+        CTGeofenceAPI.getInstance(this)
+                .init(ctGeofenceSettings, clevertapDefaultInstance);
+
+        try {
+            CTGeofenceAPI.getInstance(this).triggerLocation();
+        } catch (Exception e) {
+            // thrown when this method is called before geofence SDK initialization
+            Log.e("clevertap Exception.triggerLocation", "=" + e);
+        }
+
+        CTGeofenceAPI.getInstance(this).setOnGeofenceApiInitializedListener(() -> {
+            //App is notified on the main thread that CTGeofenceAPI is initialized
+            Log.e("clevertap OnGeofenceApiInitialized-", "-----OnGeofenceApiInitialized----=");
+        });
+        CTGeofenceAPI.getInstance(this).setCtGeofenceEventsListener(this);
+    }
+
+    @Override
+    public void onLocationChanged(@NonNull Location location) {
+        CleverTapAPI cleverTapAPI = CleverTapAPI.getDefaultInstance(getApplicationContext());
+//        cleverTapAPI.getLocation();
+//        cleverTapAPI.setLocation(cleverTapAPI.getLocation()); //android.location.Location
+        Log.d("CleverTap T Default", "location Default" + location);
+
+        Log.d("CleverTap T CT", "location CT" + cleverTapAPI.getLocation());
+    }
+
     @Override
     public void onInAppButtonClick(HashMap<String, String> hashMap) {
-        if(hashMap != null && hashMap.containsKey("phone")){
-            Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + hashMap.get("phone")));
-            startActivity(intent);
+        if(hashMap != null){
+            Log.d("Clevertap","print hashmapps" + String.valueOf(hashMap));
         }
     }
+
+
     @Override
     public void inboxDidInitialize() {
 
@@ -232,4 +282,15 @@ public class MainActivity extends AppCompatActivity implements CTInboxListener, 
     private void prepareDisplayView(CleverTapDisplayUnit unit) {
         //TODO: code for UI
     }
+
+    @Override
+    public void onGeofenceEnteredEvent(JSONObject geofenceEnteredEventProperties) {
+        clevertapDefaultInstance.pushEvent("Ct location entered");
+    }
+
+    @Override
+    public void onGeofenceExitedEvent(JSONObject geofenceExitedEventProperties) {
+        clevertapDefaultInstance.pushEvent("Ct location exited");
+    }
 }
+
